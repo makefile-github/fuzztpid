@@ -1,4 +1,5 @@
 #include "fuzzypid.h"
+#include <unistd.h>
 
 /**********************************************************
 模糊化
@@ -10,13 +11,32 @@ float membershipFunc(float left, float center, float right, float x)
 {
 	if (x >= left && x <= center)
 	{
-		return (x - left) / (center - left);
+		//防止分母为0
+		return (left != center)?((x - left) / (center - left)):1;
 	}
 	else if (x > center && x <= right)
 	{
-		return (right - x) / (right - center);
+		return (center != right)?((right - x) / (right - center)):1;
 	}
 	return 0;
+
+	// if (x <= left)
+	// {
+	// 	return left;
+	// }
+	// else if (x >= right)
+	// {
+	// 	return right;
+	// }
+	// else if (x >= left && x <= center)
+	// {
+	// 	return (x - left) / (center - left);
+	// }
+	// else if (x > center && x <= right)
+	// {
+	// 	return (right - x) / (right - center);
+	// }
+	// else	return 0;
 }
 
 // e & ec: e = input - target
@@ -387,7 +407,7 @@ void PIDFuzzyRule(float xe, float xec, float res[][3], int which, int n)
 	float temp[49][3] = {0};
 	char flag[49] = {0};
 	float(*p)[7] = NULL;
-	int i = 0, j = 0, k = 0;
+	int i = 0, j = 0, k = 0, cnt = 0;
 	switch (which)
 	{
 	case P:
@@ -413,12 +433,18 @@ void PIDFuzzyRule(float xe, float xec, float res[][3], int which, int n)
 				temp[k][0] = membershipFunc(e[j][0], e[j][1], e[j][2], xe);
 				temp[k][1] = membershipFunc(ec[i][0], ec[i][1], ec[i][2], xec);
 				temp[k][2] = p[i][j];
-				printf("match\n");
+				//printf("%dmatch[%d][%d];cnt:%d;xe:%f;xec:%f;lvl:%f\n",which,i,j,k,temp[k][0],temp[k][1],temp[k][2]);
 			}
 			k++;
 		}
 	}
+	// //未找到匹配区域处理
+	// if (k == 0)
+	// {
+	// 	//极限值处理，也可以模糊控制不介入
+	// }
 
+	cnt = k;	//备份匹配数量
 	k = 0;
 
 	for (i = 0; i < 49; i++)
@@ -430,6 +456,10 @@ void PIDFuzzyRule(float xe, float xec, float res[][3], int which, int n)
 				res[k][j] = temp[i][j];
 			}
 			k++;
+			if(k == cnt)
+			{
+				break;
+			}
 		}
 	}
 }
@@ -496,13 +526,15 @@ float defuzzy(float res[][3], int n, int which)
 	float max = res[0][0] * res[0][1];
 	int k = 0;
 	float temp = 0;
-	for (i = 1; i < n; i++)
+	for (i = 1; i < 49; i++)	//n 变更成全部数据遍历
 	{
 		if ((res[i][0]) * (res[i][1]) > max)
+		{
 			max = res[i][0] * res[i][1];
+		}
 	}
 
-	for (i = 0; i < n; i++)
+	for (i = 0; i < 49; i++)	//n 变更成全部数据遍历
 	{
 		if ((res[i][0]) * (res[i][1]) - max <= 0.00001 && (res[i][0]) * (res[i][1]) - max >= -0.00001) // important no ==
 		{
@@ -511,6 +543,11 @@ float defuzzy(float res[][3], int n, int which)
 		}
 	}
 
+	//防止除法分母为0
+	if (k == 0)		
+	{
+		k = 1;
+	}
 	return temp / k;
 }
 
@@ -550,13 +587,13 @@ int outPut(float target, float cur, float kp, float ti, float td, int whichChann
 
 	param[channel].cur1 = cur;
 
-	printf("cu1=%f,cu2=%f\n", param[channel].cur1, param[channel].cur2);
+	//printf("cu1=%f,cu2=%f\n", param[channel].cur1, param[channel].cur2);
 
 	// 模糊化
 	e = param[channel].offset1 / param[channel].ratioFactorE;
 	ec = (param[channel].cur1 - param[channel].cur2) / param[channel].ratioFactorEC;
 
-	printf("e=%f,ec=%f\n", e, ec);
+	//printf("e=%f,ec=%f\n", e, ec);
 
 	// 规则匹配
 	PIDFuzzyRule(e, ec, pRes, P, 10);
@@ -567,25 +604,30 @@ int outPut(float target, float cur, float kp, float ti, float td, int whichChann
 	tivar = defuzzy(iRes, 10, I);
 	tdvar = defuzzy(dRes, 10, D);
 
-	printf("kpvar=%f,tivar=%f,tdvar=%f\n", kpvar, tivar, tdvar);
+	//printf("kpfz=%f,tifz=%f,tdfz=%f\n", kpvar, tivar, tdvar);
 
-	// 放大
-	kpvar *= param[channel].ratioFactorP;
-	tivar /= param[channel].ratioFactorI;
-	tdvar /= param[channel].ratioFactorD;
+	// // 放大
+	// kpvar *= param[channel].ratioFactorP;
+	// tivar /= param[channel].ratioFactorI;
+	// tdvar /= param[channel].ratioFactorD;
 	
-	printf("kpvar=%f,tivar=%f,tdvar=%f\n", kpvar, tivar, tdvar);
+	//按原系数处理
+	kpvar *= kp/3;
+	tivar *= ti/3;
+	tdvar *= td/3;
+
+	//printf("kpvar=%f,tivar=%f,tdvar=%f\n", kpvar, tivar, tdvar);
 
 	kpfinal = ((kp + kpvar) > 0) ? (kp + kpvar) : 0;
-	tifinal = ((ti + tivar) > 0) ? (ti + tivar) : 0;
+	tifinal = ((ti + tivar) > 0) ? (ti + tivar) : 1;	//为0时导致除法异常
 	tdfinal = ((td + tdvar) > 0) ? (td + tdvar) : 0;
 
-	printf("kpfinal=%f,tifinal=%f,tdfinal=%f\n", kpfinal, tifinal, tdfinal);
+	//printf("kpfinal=%f,tifinal=%f,tdfinal=%f\n", kpfinal, tifinal, tdfinal);
 
 	a = (kpfinal) * (1 + t / (tifinal) + (tdfinal) / t);
 	b = (-(kpfinal)) * (1 + 2 * (tdfinal) / t);
 	c = (kpfinal) * (tdfinal) / t;
-	printf("a=%f,b=%f,c=%f\n", a, b, c);
+	//printf("a=%f,b=%f,c=%f\n", a, b, c);
 
 	outvar = a * param[channel].offset1 + b * param[channel].offset2 + c * param[channel].offset3;
 	param[channel].offset2 = param[channel].offset1;
@@ -593,7 +635,7 @@ int outPut(float target, float cur, float kp, float ti, float td, int whichChann
 
 	param[channel].cur2 = param[channel].cur1;
 
-	printf("outvar=%f\n", outvar);
+	//printf("outvar=%f\n", outvar);
 
 	param[channel].pwmout += (int)(-outvar);
 
@@ -601,18 +643,36 @@ int outPut(float target, float cur, float kp, float ti, float td, int whichChann
 		param[channel].pwmout = param[channel].maxout;
 	if (param[channel].pwmout <= param[channel].minout)
 		param[channel].pwmout = param[channel].minout;
-	printf("outpwm=%d\n", param[channel].pwmout);
+	//printf("outpwm=%d\n", param[channel].pwmout);
 	return param[channel].pwmout;
 }
 
+#define BUF_LEN 5
 int main(void)
 {
-	float cur = 0;
-	int out = 0;
+	float cur = 500;
+	int out = 0, target = 240;	//0
+	int arry[BUF_LEN]={0}, i=0;
 	while (1)
 	{
-		scanf("%f", &cur);
-		out = outPut(240, cur, 10, 1, 1, 1);
-		printf("%d\n", out);
+		// scanf("%f", &cur);
+		out = outPut(target, cur, 10, 30, 10, 1);
+		printf("cur:%f;out:%d\n", cur, out);
+
+		//模拟延时
+		for(i=0; i<BUF_LEN-1; i++)
+		{
+			arry[i] = arry[i+1];
+		}
+		arry[i] = out;
+
+		cur -= (arry[0]-cur)/100;
+
+		if (target == cur)
+		{
+			return 0;
+		}
+
+		usleep(200000);	//延时200ms
 	}
 }
